@@ -9,6 +9,7 @@ import scipy.io
 import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
+import mat73
 # anatomy check 
 
 def select_template(tif_path, method='mip'):
@@ -38,13 +39,129 @@ def select_template(tif_path, method='mip'):
     return template
 
 # Example usage
-tif_path = '20231205_3_1_5_3554_256_512_uint16__E_05_Iter_10368_output.tif'
+base_path = 'C:/Users/wilson/OneDrive - Harvard University/Thesis - Wilson lab/2P imaging/scopa inspect/20231205_3/'
+tif_name = 'data/20231205_3_1_4_3554_256_512_uint16__E_05_Iter_10368_output.tif'
+tif_path = base_path + tif_name
 template = select_template(tif_path, method='mip')  # Change method as needed
 
 # Display the selected template
 #plt.imshow(template, cmap='gray')
 #plt.title('Selected Template')
 #plt.show()
+
+def extract_dimensions_and_plane(filename):
+    """
+    Extract the plane number, time steps, height, and width from the filename.
+    
+    Args:
+    - filename (str): The filename to parse.
+    
+    Returns:
+    - tuple: (plane_num, time_steps, height, width)
+    """
+    # Split the filename on underscores
+    parts = filename.split('_')
+    
+    # Extract the relevant parts based on the known sequence
+    plane_num = int(parts[3])
+    time_steps = int(parts[4])
+    height = int(parts[5])
+    width = int(parts[6])
+    
+    return plane_num, time_steps, height, width
+
+# Example usage
+plane_num, time_steps, height, width = extract_dimensions_and_plane(tif_name)
+print(f"Plane Number: {plane_num}, Time Steps: {time_steps}, Height: {height}, Width: {width}")
+ 
+
+def load_and_convert_matlab_table(filepath):
+    """
+    Load a MATLAB table from a .mat file and convert it into a Python dictionary.
+    
+    Args:
+    - filepath (str): Path to the .mat file containing the MATLAB table.
+    
+    Returns:
+    - dict: A dictionary with ROI names as keys and a list of dictionaries (one for each subROI) as values.
+            Each subROI dictionary contains 'plane' and 'masks' data.
+    """
+    # Load the .mat file
+    try:
+        data = scipy.io.loadmat(filepath)
+    except NotImplementedError as e:
+        # If scipy.io.loadmat fails due to version incompatibility, try with mat73.loadmat
+        print(f"Loading with scipy.io failed: {e}. Trying with mat73.")
+        data = mat73.loadmat(filepath)
+    # Assuming the table is stored under the variable name 'tableData' in the .mat file
+    struct = data['roiDefs']
+    
+    # Initialize a dictionary to hold the converted data
+    roi_dict = {}
+    
+    # Iterate through the table rows
+    for i in range(len(struct['name'])):
+        roi_name = struct['name'][i]  # Assuming 'name' is the field for ROI names
+        subrois = struct['subROIs'][i]  # Assuming 'subROIs' is the field for the struct array
+        
+        # Initialize a list to hold subROI data for this ROI
+        subroi_list = []
+        
+        # Iterate through each subROI struct
+        for j in range(len(subrois['plane'])):
+            # Extract 'plane' and 'masks' fields from the struct
+            plane = int(subrois['plane'][j])
+            mask = subrois['mask'][j]
+            
+            # Append this subROI's data to the list
+            subroi_list.append({'plane': plane, 'mask': mask})
+        
+        # Add the list of subROI data to the dictionary, keyed by the ROI name
+        roi_dict[roi_name] = subroi_list
+    
+    return roi_dict
+
+roi_dict = load_and_convert_matlab_table(base_path+'data/roiDefs_trial_001.mat')
+#print(roi_dict)
+
+
+def filter_and_save_rois(roi_dict, plane_num, output_path):
+    """
+    Filters ROIs by plane number, stacks matching ROI masks into a 3D array, and saves the result.
+    
+    Args:
+    - roi_dict (dict): The dictionary containing ROI names and their subROIs with planes and masks.
+    - plane_num (int): The plane number to filter ROIs by.
+    - output_path (str): Path to save the numpy file containing the names and 3D mask array.
+    """
+    # Initialize list for storing ROI names and an empty list for collecting masks
+    roi_names = []
+    masks = []
+
+    # Iterate through all ROIs in the data
+    for roi_name, subrois in roi_dict.items():
+        for subroi in subrois:
+            if subroi['plane'] == plane_num:
+                # If the current plane matches, add the mask to the masks list and store the ROI name
+                masks.append(subroi['mask'])
+                roi_names.append(roi_name)
+                break  # Assuming only one match per ROI is needed
+    
+    # Stack masks along the z-dimension to create a 3D array
+    if masks:
+        masks_all = np.dstack(masks)
+    else:
+        # Return or handle the case where no masks match the specified plane
+        print("No matching ROIs found for the specified plane.")
+        return
+
+    # Save the ROI names and 3D mask array to a file
+    np.save(output_path, {'roi_names': roi_names, 'mask_all': masks_all})
+    
+    print(f"Saved {len(roi_names)} ROIs and their masks to {output_path}.")
+
+save_path = base_path + 'results/roi_mask.npy'
+filter_and_save_rois(roi_dict, plane_num, save_path)
 
 class FreehandROI:
     def __init__(self, ax, template):
@@ -79,7 +196,7 @@ class FreehandROI:
         self.line.set_data(self.xs, self.ys)
         self.ax.figure.canvas.draw()
         # Save the drawing and create mask
-        self.save_roi('roi_coordinates.txt')
+        self.save_roi(base_path + 'results/roi_coordinates.txt')
         self.create_mask()
 
     def save_roi(self, filename):
@@ -89,12 +206,142 @@ class FreehandROI:
     def create_mask(self):
         """Create a binary mask from the ROI and save it as a .npy file."""
         mask = polygon2mask(self.template.shape, np.array(list(zip(self.ys, self.xs))))
-        np.save('roi_mask.npy', mask)  # Save mask as .npy file
+        np.save(base_path + 'results/roi_mask.npy', mask)  # Save mask as .npy file
+
+# TODO: continue working on this class
+class EnhancedMultipleROIs:
+    def __init__(self, ax, template, base_path):
+        self.ax = ax
+        self.template = template
+        self.base_path = base_path  # Store base_path as an instance variable
+        self.rois = []  # List of ROIs, each a list of (x, y) tuples
+        self.polygons = []  # Polygon objects for visualization
+        self.current_mode = 'freehand'  # Can be 'freehand' or 'subroi'
+        self.primary_roi = None  # Store the primary ROI for sub-ROI drawing
+        
+        # Event connections
+        self.cid_press = ax.figure.canvas.mpl_connect('button_press_event', self.on_press)
+        self.cid_release = ax.figure.canvas.mpl_connect('button_release_event', self.on_release)
+        self.cid_motion = ax.figure.canvas.mpl_connect('motion_notify_event', self.on_motion)
+        self.cid_key = ax.figure.canvas.mpl_connect('key_press_event', self.on_key_press)
+        self.drawing = False
+        
+    def on_press(self, event):
+        if self.current_mode == 'freehand':
+            self.start_roi(event)
+        elif self.current_mode == 'subroi' and self.primary_roi:
+            self.start_subroi(event)
+
+    def on_motion(self, event):
+        if self.current_mode == 'freehand':
+            self.update_roi(event)
+
+    def on_release(self, event):
+        if self.current_mode == 'freehand':
+            self.finalize_roi()
+
+    def on_key_press(self, event):
+        if event.key == 'enter':
+            self.finalize_all_rois()
+        elif event.key == '1':
+            self.current_mode = 'freehand'
+            print("Switched to freehand drawing mode.")
+        elif event.key == '2':
+            self.current_mode = 'subroi'
+            print("Switched to sub-ROI drawing mode. Draw the primary ROI first if not drawn.")
+
+    def start_roi(self, event):
+        # Initialize a new ROI or a primary ROI for sub-ROI mode
+        if self.current_mode == 'freehand' or (self.current_mode == 'subroi' and not self.primary_roi):
+            self.current_xs, self.current_ys = [event.xdata], [event.ydata]
+            self.drawing = True
+
+    def update_roi(self, event):
+        # Update the current ROI with new points if in freehand mode
+        if self.drawing and self.current_mode == 'freehand':
+            self.current_xs.append(event.xdata)
+            self.current_ys.append(event.ydata)
+            self.ax.plot(self.current_xs, self.current_ys, 'r-')  # This dynamically draws; consider optimizing for performance
+            self.ax.figure.canvas.draw()
+
+    def finalize_roi(self):
+        # Finalize the current ROI; for freehand, this closes the polygon and stores it
+        if self.drawing and len(self.current_xs) > 2 and self.current_mode == 'freehand':
+            # Close the ROI by connecting the last point to the first
+            self.current_xs.append(self.current_xs[0])
+            self.current_ys.append(self.current_ys[0])
+            polygon = Polygon(np.column_stack([self.current_xs, self.current_ys]), closed=True, fill=False, color='r')
+            self.ax.add_patch(polygon)
+            self.polygons.append(polygon)
+            
+            # Store the ROI; if it's the first in sub-ROI mode, treat it as the primary ROI
+            if self.current_mode == 'subroi' and not self.primary_roi:
+                self.primary_roi = (self.current_xs, self.current_ys)
+            else:
+                self.rois.append((self.current_xs, self.current_ys))
+            
+            self.current_xs, self.current_ys = [], []  # Reset current points
+            self.drawing = False
+
+    def start_subroi(self, event):
+        # Assuming a primary ROI exists, start defining sub-ROIs based on clicks on the boundary
+        if self.current_mode == 'subroi' and self.primary_roi:
+            # For simplicity, this example doesn't implement logic to ensure clicks are on the boundary.
+            # You could add this by checking if the event coordinates are close to any segment of the primary_roi
+            self.current_xs, self.current_ys = [event.xdata], [event.ydata]
+            self.drawing = True  # This allows drawing within the primary ROI boundary
+
+    def finalize_all_rois(self):
+        # Finalizes all ROIs, creates masks, and disconnects event handlers
+        self.finalize_roi()  # Ensure the current ROI is finalized
+        
+        # Create a mask for each ROI
+        self.masks = [polygon2mask(self.template.shape, np.array(list(zip(ys, xs)))) for xs, ys in self.rois]
+        
+        # Optionally save masks to a file here
+        
+        # Disconnect event handlers to prevent further drawing
+        self.ax.figure.canvas.mpl_disconnect(self.cid_press)
+        self.ax.figure.canvas.mpl_disconnect(self.cid_release)
+        self.ax.figure.canvas.mpl_disconnect(self.cid_motion)
+        self.ax.figure.canvas.mpl_disconnect(self.cid_key)
+    
+    def save_rois_and_masks(self):
+        """
+        Save the coordinates of ROIs and the generated masks.
+
+        Parameters:
+        - base_path: The base directory path where the files will be saved.
+        """
+        # Ensure base_path ends with a slash
+        if not base_path.endswith('/'):
+            base_path += '/'
+        
+        # Save ROI coordinates
+        roi_coords_filename = base_path + 'roi_coordinates.txt'
+        with open(roi_coords_filename, 'w') as f:
+            for idx, (xs, ys) in enumerate(self.rois):
+                coords = np.column_stack([xs, ys])
+                np.savetxt(f, coords, header=f'ROI {idx}', comments='')
+                f.write('\n\n')  # Separate ROIs by blank lines
+
+        print(f'Saved ROI coordinates to {roi_coords_filename}')
+        
+        # Save masks
+        masks_filename = self.base_path + 'results/roi_masks.npy'
+        # Assuming self.masks is a list of 2D arrays, each representing a mask for an ROI
+        if self.masks:
+            masks_array = np.stack(self.masks, axis=-1)  # Stack masks along the third dimension
+            np.save(masks_filename, masks_array)
+            print(f'Saved ROI masks to {masks_filename}')
+        else:
+            print('No masks to save.')
+
 
 def draw_freehand_roi(template):
     fig, ax = plt.subplots()
     ax.imshow(template, cmap='gray')
-    roi_drawer = FreehandROI(ax, template)
+    roi_drawer = EnhancedMultipleROIs(ax, template,base_path)
     plt.show()
 
 # Function to save .tif time-lapse data as .npy
@@ -111,15 +358,16 @@ def save_tif_as_npy(tif_path, npy_path):
     np.save(npy_path, data)
 
 # Assuming 'template' is your selected template image
-draw_freehand_roi(template)
+#draw_freehand_roi(template)
 
 # Example for saving .tif data as .npy
-tif_path = '20231205_3_1_5_3554_256_512_uint16__E_05_Iter_10368_output.tif'
-npy_path = 'denoised.npy'
-save_tif_as_npy(tif_path, npy_path)
+#tif_path = '20231205_3_1_5_3554_256_512_uint16__E_05_Iter_10368_output.tif'
+
+#npy_path = base_path + 'results/denoised.npy'
+#save_tif_as_npy(tif_path, npy_path)
 
 
-def create_time_series_video_and_save_npy(roi_mask_path, time_lapse_video_path, output_npy_path):
+def avg_by_roi(roi_mask, time_lapse_video, output_npy_path):
     """
     Creates a time-series video by applying an ROI mask to each frame of the input video,
     saves it to the specified output path, and also saves the masked frames as a .npy file.
@@ -131,8 +379,8 @@ def create_time_series_video_and_save_npy(roi_mask_path, time_lapse_video_path, 
     - output_npy_path: Path where the masked frames will be saved as a .npy file.
     """
     # Load the ROI mask and time-lapse video data
-    roi_mask = np.load(roi_mask_path)
-    time_lapse_video = np.load(time_lapse_video_path)
+    #roi_mask = np.load(roi_mask_path)
+    #time_lapse_video = np.load(time_lapse_video_path)
     
     # Ensure the mask is boolean for masking operations
     roi_mask = roi_mask.astype(bool)
@@ -140,20 +388,36 @@ def create_time_series_video_and_save_npy(roi_mask_path, time_lapse_video_path, 
     avg_raw = np.mean(masked_frames, axis=(1, 2))
     std_raw = np.std(masked_frames, axis=(1, 2))/np.sqrt(roi_mask.size)
     # Convert the list of masked frames to a numpy array and save as .npy file
-    np.save(output_npy_path, masked_frames)
+    #np.save(output_npy_path, masked_frames)
     
     #print(f"Video saved to {output_video_path}")
-    print(f"Masked frames saved to {output_npy_path}")
+    #print(f"Masked frames saved to {output_npy_path}")
     return std_raw, avg_raw
 
-# Example usage
-roi_mask_path = 'roi_mask.npy'
-time_lapse_video_path = 'denoised.npy'
-output_npy_path = 'roi_extract.npy'
-std_raw, avg_raw = create_time_series_video_and_save_npy(roi_mask_path, time_lapse_video_path, output_npy_path)
+def avg_by_roi_loop(roi_mask_path, time_lapse_video_path):
+    data = np.load(roi_mask_path, allow_pickle=True).item()
+    roi_names = data['roi_names']
+    roi_all = data['mask_all']
+    std_all =[]
+    avg_all = []
+    time_lapse_video = np.load(time_lapse_video_path)
+    for i in range(len(roi_names)):
+        roi_mask = roi_all[:,:,i]
+        output_npy_path = base_path + 'results/'+ roi_names[i] +'.npy'
+        std_raw, avg_raw = avg_by_roi(roi_mask, time_lapse_video, output_npy_path)
+        std_all.append(std_raw)
+        avg_all.append(avg_raw)
+    return std_all, avg_all
 
-preprocessed_vars_ds = scipy.io.loadmat('preprocessed_vars_ds_trial1.mat')
-preprocessed_vars_odor = scipy.io.loadmat('preprocessed_vars_odor_trial1.mat')
+# Example usage
+roi_mask_path = base_path + 'results/roi_mask.npy'
+time_lapse_video_path = base_path + 'results/denoised.npy'
+#std_all, avg_all = avg_by_roi_loop(roi_mask_path, time_lapse_video_path)
+#output_npy_path = base_path + 'results/roi_extract.npy'
+#std_raw, avg_raw = avg_by_roi(roi_mask_path, time_lapse_video_path, output_npy_path)
+
+preprocessed_vars_ds = scipy.io.loadmat(base_path + 'data/preprocessed_vars_ds trial1.mat')
+preprocessed_vars_odor = scipy.io.loadmat(base_path + 'data/preprocessed_vars_odor trial1.mat')
 
 def make_bh_df(preprocessed_vars_ds,preprocessed_vars_odor):
     fl_df = pd.DataFrame()
@@ -174,7 +438,7 @@ def make_bh_df(preprocessed_vars_ds,preprocessed_vars_odor):
 fl_df = make_bh_df(preprocessed_vars_ds,preprocessed_vars_odor)
 #print(fl_df.head(5))
 
-plt.figure(figsize=(10, 6))
+'''plt.figure(figsize=(10, 6))
 plt.plot(avg_raw)
 plt.fill_between(np.arange(len(avg_raw)),avg_raw-std_raw,avg_raw+std_raw, alpha=0.5)
 plt.fill_between(np.arange(len(avg_raw)), 2, 4.3, where=np.array(fl_df.odor_mask), alpha=0.3)
@@ -185,9 +449,60 @@ plt.title('avg raw fluorescence in ROI vs frames')
 
 # Save the plot
 plt.savefig('avg_raw.png')
-plt.close()  # Close the plot explicitly after saving to free resources
+plt.close()  # Close the plot explicitly after saving to free resources'''
 
-roi_mask = np.load(roi_mask_path)
+
+def plot_avg_fluorescence_with_std(avg_values_list, std_values_list, odor_mask, num_cols=2):
+    """
+    Plots average fluorescence traces with standard deviation for multiple ROIs.
+    
+    Args:
+    - avg_values_list (list of lists): List containing average fluorescence values for each ROI.
+    - std_values_list (list of lists): List containing standard deviation values for each ROI.
+    - odor_mask (np.array): Boolean array indicating specific frames (e.g., odor presentation).
+    - num_rows (int): Number of rows in the subplot grid.
+    - num_cols (int): Number of columns in the subplot grid. Default is 2.
+    """
+    num_rows = int(np.ceil(len(avg_values_list) / 2))
+
+    fig, axes = plt.subplots(num_rows, num_cols, figsize=(num_cols*5, num_rows*3))
+    axes = axes.flatten()  # Flatten the axes array for easy indexing
+    
+    for i, (avg_raw, std_raw) in enumerate(zip(avg_values_list, std_values_list)):
+        ax = axes[i]
+        frames = np.arange(len(avg_raw))
+        
+        # Plot average fluorescence
+        ax.plot(frames, avg_raw, label='Average Fluorescence')
+        
+        # Plot standard deviation area
+        ax.fill_between(frames, avg_raw-std_raw, avg_raw+std_raw, alpha=0.5, label='Std Dev')
+        
+        # Highlight specific regions (e.g., odor presentation)
+        ax.fill_between(frames, min(avg_raw-std_raw), max(avg_raw+std_raw), 
+                        where=odor_mask, color='gray', alpha=0.3, label='Odor Presentation')
+        
+        # Set titles and labels
+        ax.set_title(f'ROI {i+1}')
+        ax.set_xlabel('Frame')
+        ax.set_ylabel('Avg raw fluorescence')
+    
+    # Add a legend in the first subplot
+    axes[0].legend(loc='upper right')
+    
+    # Adjust layout
+    plt.tight_layout()
+    
+    # Save the figure
+    plt.savefig(base_path+'results/avg_raw_multiple_rois.png')
+    plt.close(fig)  # Close the figure to free resources
+
+
+#plot_avg_fluorescence_with_std(avg_all, std_all, fl_df.odor_mask, num_cols=2)
+
+data = np.load(roi_mask_path, allow_pickle=True).item()
+roi_names = data['roi_names']
+roi_all = data['mask_all']
 time_lapse_data = np.load(time_lapse_video_path)
 
 def roi_crop(roi_mask):
@@ -196,7 +511,7 @@ def roi_crop(roi_mask):
     min_col, max_col = cols.min(), cols.max()
     return min_row, max_row, min_col, max_col
 
-def perform_pca_and_visualize_roi(time_lapse_data, roi_mask, n_components=2):
+def perform_pca_and_visualize_roi(time_lapse_data, roi_mask, roi_name,n_components=3):
     """
     Perform PCA on pixel values within an ROI across all frames and visualize the
     top principal components as heatmaps in their original spatial arrangement.
@@ -239,11 +554,11 @@ def perform_pca_and_visualize_roi(time_lapse_data, roi_mask, n_components=2):
         plt.colorbar(im, ax=ax)
     
     plt.tight_layout()
-    plt.show()
-    plt.savefig('pca_map')
+    #plt.show()
+    plt.savefig(base_path+f'results/{roi_name} pca_map.png')
     return pca, pca_result
 
-pca_obj, pca_result = perform_pca_and_visualize_roi(time_lapse_data, roi_mask, n_components=3)
+pca_obj, pca_result = perform_pca_and_visualize_roi(time_lapse_data, roi_all[:,:,1], roi_names[1], n_components=3)
 
 def cluster_pixels_by_pca_components(pca_result, n_clusters):
     """
@@ -264,7 +579,7 @@ def cluster_pixels_by_pca_components(pca_result, n_clusters):
 
 cluster_labels = cluster_pixels_by_pca_components(pca_result, 2)
 
-def visualize_cluster_heatmap(cluster_labels, roi_mask):
+def visualize_cluster_heatmap(cluster_labels, roi_mask, roi_name):
     """
     Visualize the cluster labels as a heatmap on the ROI mask, with pixels outside the ROI in gray and cropped to fit the ROI.
     
@@ -295,11 +610,12 @@ def visualize_cluster_heatmap(cluster_labels, roi_mask):
     
     plt.colorbar()
     plt.title('Cluster Labels Heatmap')
-    plt.show()
+    #plt.show()
+    plt.savefig(base_path+f'results/{roi_name} cluster_map.png')
 
-visualize_cluster_heatmap(cluster_labels, roi_mask)
+visualize_cluster_heatmap(cluster_labels, roi_all[:,:,1], roi_names[1])
 
-def calculate_and_plot_cluster_statistics(time_lapse_data, roi_mask, cluster_labels, n_clusters):
+def calculate_and_plot_cluster_statistics(time_lapse_data, roi_mask, roi_name, cluster_labels, n_clusters):
     """
     Calculate the average and standard error of pixel values by cluster on each frame, 
     and plot the time series curves for each cluster.
@@ -339,11 +655,11 @@ def calculate_and_plot_cluster_statistics(time_lapse_data, roi_mask, cluster_lab
     plt.ylabel('Average Pixel Value')
     plt.title('Average Pixel Value by Cluster Over Time with Standard Error')
     plt.legend()
-    plt.savefig('avg_bycluster')
+    plt.savefig(base_path+f'results/{roi_name} avg_bycluster')
     plt.close()
-    #print(f"Plot saved to {save_path}")
+    #print(f"Plot saved to {base_path}")
 
-calculate_and_plot_cluster_statistics(time_lapse_data, roi_mask, cluster_labels, 2)
+calculate_and_plot_cluster_statistics(time_lapse_data, roi_all[:,:,1], roi_names[1], cluster_labels, 2)
 
 '''def plot_frame_pixels_in_pc_space(pca, time_lapse_data, roi_mask, frame_index):
     """
@@ -404,7 +720,7 @@ def plot_pca_components_3d_with_clusters(pca_result, cluster_labels):
     ax.legend()
     plt.show()
 
-plot_pca_components_3d_with_clusters(pca_result, cluster_labels)
+#plot_pca_components_3d_with_clusters(pca_result, cluster_labels)
 
 def plot_component_contributions(pca):
     """
@@ -427,4 +743,4 @@ def plot_component_contributions(pca):
     plt.grid(True)
     plt.show()
 
-plot_component_contributions(pca_obj)
+#plot_component_contributions(pca_obj)
