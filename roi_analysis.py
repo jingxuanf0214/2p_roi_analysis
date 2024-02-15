@@ -10,6 +10,9 @@ import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 import mat73
+import matplotlib.image as mpimg
+import os
+
 # anatomy check 
 
 def select_template(tif_path, method='mip'):
@@ -511,7 +514,7 @@ def roi_crop(roi_mask):
     min_col, max_col = cols.min(), cols.max()
     return min_row, max_row, min_col, max_col
 
-def perform_pca_and_visualize_roi(time_lapse_data, roi_mask, roi_name,n_components=3):
+def perform_pca_and_visualize_roi(time_lapse_data, roi_mask, save_path,n_components=3):
     """
     Perform PCA on pixel values within an ROI across all frames and visualize the
     top principal components as heatmaps in their original spatial arrangement.
@@ -555,10 +558,10 @@ def perform_pca_and_visualize_roi(time_lapse_data, roi_mask, roi_name,n_componen
     
     plt.tight_layout()
     #plt.show()
-    plt.savefig(base_path+f'results/{roi_name} pca_map.png')
+    plt.savefig(save_path +'/pca_map.png')
     return pca, pca_result
 
-pca_obj, pca_result = perform_pca_and_visualize_roi(time_lapse_data, roi_all[:,:,1], roi_names[1], n_components=3)
+#pca_obj, pca_result = perform_pca_and_visualize_roi(time_lapse_data, roi_all[:,:,1], roi_names[1], n_components=3)
 
 def cluster_pixels_by_pca_components(pca_result, n_clusters):
     """
@@ -577,9 +580,9 @@ def cluster_pixels_by_pca_components(pca_result, n_clusters):
     cluster_labels = kmeans.labels_
     return cluster_labels
 
-cluster_labels = cluster_pixels_by_pca_components(pca_result, 2)
+#cluster_labels = cluster_pixels_by_pca_components(pca_result, 2)
 
-def visualize_cluster_heatmap(cluster_labels, roi_mask, roi_name):
+def visualize_cluster_heatmap(cluster_labels, roi_mask, save_path):
     """
     Visualize the cluster labels as a heatmap on the ROI mask, with pixels outside the ROI in gray and cropped to fit the ROI.
     
@@ -611,11 +614,11 @@ def visualize_cluster_heatmap(cluster_labels, roi_mask, roi_name):
     plt.colorbar()
     plt.title('Cluster Labels Heatmap')
     #plt.show()
-    plt.savefig(base_path+f'results/{roi_name} cluster_map.png')
+    plt.savefig(save_path + '/cluster_map.png')
 
-visualize_cluster_heatmap(cluster_labels, roi_all[:,:,1], roi_names[1])
+#visualize_cluster_heatmap(cluster_labels, roi_all[:,:,1], roi_names[1])
 
-def calculate_and_plot_cluster_statistics(time_lapse_data, roi_mask, roi_name, cluster_labels, n_clusters):
+def calculate_and_plot_cluster_statistics(time_lapse_data, roi_mask, save_path, cluster_labels, n_clusters):
     """
     Calculate the average and standard error of pixel values by cluster on each frame, 
     and plot the time series curves for each cluster.
@@ -646,7 +649,7 @@ def calculate_and_plot_cluster_statistics(time_lapse_data, roi_mask, roi_name, c
         stderrs[:, cluster_idx] = np.std(cluster_pixels, axis=(1, 2)) / np.sqrt(np.count_nonzero(~np.isnan(cluster_pixels), axis=(1, 2)))
     
     # Plotting
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(15, 6))
     for cluster_idx in range(n_clusters):
         plt.fill_between(range(time_lapse_data.shape[0]), means[:, cluster_idx] - stderrs[:, cluster_idx], means[:, cluster_idx] + stderrs[:, cluster_idx], alpha=0.2)
         plt.plot(range(time_lapse_data.shape[0]), means[:, cluster_idx], label=f'Cluster {cluster_idx}')
@@ -655,11 +658,57 @@ def calculate_and_plot_cluster_statistics(time_lapse_data, roi_mask, roi_name, c
     plt.ylabel('Average Pixel Value')
     plt.title('Average Pixel Value by Cluster Over Time with Standard Error')
     plt.legend()
-    plt.savefig(base_path+f'results/{roi_name} avg_bycluster')
+    plt.savefig(save_path+'/avg_bycluster.png')
     plt.close()
     #print(f"Plot saved to {base_path}")
 
-calculate_and_plot_cluster_statistics(time_lapse_data, roi_all[:,:,1], roi_names[1], cluster_labels, 2)
+#calculate_and_plot_cluster_statistics(time_lapse_data, roi_all[:,:,1], roi_names[1], cluster_labels, 2)
+
+# Path to your PNG images
+    
+def stitch_image(image_path1,image_path2,image_path3,save_path):
+    # Load the images
+    img1 = mpimg.imread(image_path1)
+    img2 = mpimg.imread(image_path2)
+    img3 = mpimg.imread(image_path3)
+    stitched_img_1 = np.concatenate((img1, img2), axis=1)
+    fig, axs = plt.subplots(2, 1, figsize=(20, 10))
+
+    # Display first image
+    axs[0].imshow(stitched_img_1)
+    axs[0].axis('off')  # Turn off axis
+
+    # Display second image
+    axs[1].imshow(img3)
+    axs[1].axis('off')  # Turn off axis
+
+    # Remove space between subplots
+    plt.subplots_adjust(wspace=0, hspace=0)
+    plt.savefig(save_path+'/stitched_img.png')
+    plt.close()
+
+save_base = base_path + 'results/'
+def summary_plot(time_lapse_data,roi_all,roi_names,query_idx,save_base):
+    save_path = save_base + roi_names[query_idx]
+    if not os.path.exists(save_path):
+        # If the folder doesn't exist, create it
+        os.makedirs(save_path)
+        print(f"Folder created at: {save_path}")
+    else:
+        print(f"Folder already exists at: {save_path}")
+    pca_obj, pca_result = perform_pca_and_visualize_roi(time_lapse_data, roi_all[:,:,query_idx], save_path, n_components=3)
+    cluster_labels = cluster_pixels_by_pca_components(pca_result, 2)
+    visualize_cluster_heatmap(cluster_labels, roi_all[:,:,query_idx], save_path)
+    calculate_and_plot_cluster_statistics(time_lapse_data, roi_all[:,:,query_idx], save_path, cluster_labels, 2)
+    image_path1 = save_path +'/pca_map.png'
+    image_path2 = save_path +'/cluster_map.png'
+    image_path3 = save_path+'/avg_bycluster.png'
+    stitch_image(image_path1,image_path2,image_path3,save_path)
+for i in range(len(roi_names)):
+    summary_plot(time_lapse_data,roi_all,roi_names,i,save_base)
+
+
+############################################################################################################
 
 '''def plot_frame_pixels_in_pc_space(pca, time_lapse_data, roi_mask, frame_index):
     """
